@@ -8,10 +8,12 @@
 
 #include "hashes.h"
 
+/* The total number of slots in the dictionary */
 #define DT_SIZE(dt) (dt->dt_allocated)
 
 #define DT_MASK(dt) ((dt)->dt_allocated - 1)
 
+/* The total number of used slots in the dictionary */
 #define DT_USED(dt) ((dt)->dt_entries.ar_used)
 
 #define DT_ADD_TO_ENTRIES(dt, entry) array_append (&dt->dt_entries, entry)
@@ -435,6 +437,17 @@ dict_insert (dict *dt, dkey_t key, dval_t value)
   return dict_insert_with_hash (dt, h, &key, &value);
 }
 
+/**
+ * @brief Insert a 3-tuple of (key, value, hash(key) into a dictionary)
+ * 
+ * @param dt the dictionary object 
+ * @param hash 
+ * @param key 
+ * @param value 
+ * @return int (-1) if any input value is invalid
+ *             (0)  if an entirely new 
+ *             (1)  if key was already in the dictionary
+ */
 int
 dict_insert_with_hash (dict *dt, hash_t hash, const dkey_t *key,
                        const dval_t *value)
@@ -442,15 +455,20 @@ dict_insert_with_hash (dict *dt, hash_t hash, const dkey_t *key,
   if (!value || !key || !dt)
     return -1;
   dval_t oldvalue;
+  // lookup the key, while simulatneously retrieving the value if the key exists
   ssize_t ix = dict_lookup (dt, hash, *key, &oldvalue);
+
   if (ix == EMPTY)
+    // key was not found, so we insert it 
     {
       if (NEEDS_RESIZING (dt))
         {
           dict_resize (dt, GROW (dt));
         }
+      // we allocate space for a new entry
       dt_entry *new_entry = SAFEMALLOC (sizeof (dt_entry));
       *new_entry = (dt_entry){ hash, *key, *value };
+      // we add the entry to the list of entrys
       DT_ADD_TO_ENTRIES (dt, new_entry);
       ssize_t hashpos = find_empty_slot (dt, hash);
       dictkeys_set_index (dt, hashpos, DT_USED (dt) - 1);
@@ -459,12 +477,13 @@ dict_insert_with_hash (dict *dt, hash_t hash, const dkey_t *key,
       dt->dt_nentries++;
     }
   else if (oldvalue != NONE && (oldvalue != *value))
+   // key was found so we overwrite the value at `ix`
     {
       DT_SET_VALUE (dt, ix, *value);
       return 1;
     }
   assert_consistent (dt);
-  return 0;
+  return EXIT_SUCCESS;
 }
 
 dval_t

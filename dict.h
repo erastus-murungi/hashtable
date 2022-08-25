@@ -26,10 +26,23 @@ void *safe_realloc(void *p, size_t n, unsigned long line);
 #define SAFEMALLOC(n) safe_malloc(n, __LINE__)
 #define SAFEREALLOC(p, n) safe_realloc(p, n, __LINE__)
 
-typedef double dkey_t;
-typedef char* dval_t;
+/* The type of the dictionary key; Currently it is a double  */
+typedef double dkey_t; 
+
+/* The type of a dictionary value; Currently it is a "string" */
+typedef char* dval_t; 
+
+/* The type of a hash; Currently it is uint64_t */
 typedef uint64_t hash_t;
 
+/**
+ * @brief This is an single item in the dictionary
+ *      
+ * An entry in the dictionary is composed of a key and a value
+ * items are used when we need to iterate need to get (key, value) pair(s)
+ * from the dictionary
+ * 
+ */
 typedef struct _item
 {
         dkey_t   key;
@@ -37,21 +50,48 @@ typedef struct _item
 } item;
 
 
+/**
+ * @brief A sized ordered set of items 
+ * 
+ */
 typedef struct _itemobj {
         item*   items;
         ssize_t n_items;
 } itemobj;
 
+/**
+ * @brief A sized ordered set of keys
+ * 
+ */
 typedef struct _keyobj {
         dkey_t* key;
         ssize_t n_keys;
 } keyobj;
 
+/**
+ * @brief A sized ordered set of values
+ * 
+ */
 typedef struct _valobj {
         dval_t * vals;
         ssize_t n_vals;
 } valobj;
 
+/**
+ * @brief A single entry in our dictionary
+ * 
+ * We internally represent an entry in our dictionary as a tuple of 
+ *      (
+ *              value,
+ *              key,
+ *              hash(key)
+ *      )
+ * It is important to store the hash of the key to avoid expensive recomputations
+ * 
+ * @note This is different of struct _item. 
+ * struct _item is only used as a return type.
+ * 
+ */
 struct _entry
 {
         hash_t et_hashval;
@@ -60,6 +100,17 @@ struct _entry
 };
 typedef struct _entry dt_entry;
 
+/**
+ * @brief A representation of the list of dt_entry values
+ * 
+ * See https://user-images.githubusercontent.com/21957448/186776267-1c46bbb2-4f2f-4b91-a3db-6d3f1bad8cbc.png
+ * for an illustration
+ * 
+ * 
+ * ar_items has `ar_allocated` total slots.
+ * ar_items has `ar_free` free slots
+ * 
+ */
 typedef struct _list_of_entries
 {
         dt_entry**              ar_items;
@@ -114,6 +165,11 @@ ssize_t array_size(list *arr);
 // return hash(key)
 hash_t hash(dkey_t key);
 
+/**
+ * @brief create a new empty dictionary with no entries and MINSIZE total slots
+ * 
+ * @return dict* 
+ */
 dict*
 dict_new_empty();
 
@@ -177,6 +233,15 @@ int dict_equal(dict *a, dict *b);
 
 void dict_printinfo(dict *dt);
 
+/**
+ * @brief The total number of active entries in the dictionary
+ * 
+ * @note 
+ * This does not include dummies
+ * 
+ * @param dt A pointer to a dictionary object
+ * @return ssize_t 
+ */
 ssize_t dict_size(dict *dt);
 
 int dict_is_empty(dict *dt);
