@@ -29,10 +29,10 @@ void *safe_realloc(void *p, size_t n, unsigned long line);
 /* The type of the dictionary key; Currently it is a double  */
 typedef double dkey_t; 
 
-/* The type of a dictionary value; Currently it is a "string" */
+/* The type of dictionary value; Currently it is a "string" */
 typedef char* dval_t; 
 
-/* The type of a hash; Currently it is uint64_t */
+/* The type of hash; Currently it is uint64_t */
 typedef uint64_t hash_t;
 
 /**
@@ -43,7 +43,7 @@ typedef uint64_t hash_t;
  * from the dictionary
  * 
  */
-typedef struct _item
+typedef struct item
 {
         dkey_t   key;
         dval_t   value;
@@ -54,28 +54,28 @@ typedef struct _item
  * @brief A sized ordered set of items 
  * 
  */
-typedef struct _itemobj {
+typedef struct itemset {
         item*   items;
         ssize_t n_items;
-} itemobj;
+} itemset;
 
 /**
  * @brief A sized ordered set of keys
  * 
  */
-typedef struct _keyobj {
+typedef struct keyset {
         dkey_t* key;
         ssize_t n_keys;
-} keyobj;
+} keyset;
 
 /**
  * @brief A sized ordered set of values
  * 
  */
-typedef struct _valobj {
+typedef struct valset {
         dval_t * vals;
         ssize_t n_vals;
-} valobj;
+} valset;
 
 /**
  * @brief A single entry in our dictionary
@@ -92,74 +92,74 @@ typedef struct _valobj {
  * struct _item is only used as a return type.
  * 
  */
-struct _entry
+struct entry
 {
         hash_t et_hashval;
         dkey_t et_key;
         dval_t et_value;
 };
-typedef struct _entry dt_entry;
+typedef struct entry dt_entry;
 
 /**
- * @brief A representation of the list of dt_entry values
+ * @brief A representation of the entry_list of dt_entry values
  * 
  * See https://user-images.githubusercontent.com/21957448/186776267-1c46bbb2-4f2f-4b91-a3db-6d3f1bad8cbc.png
  * for an illustration
  * 
  * 
- * ar_items has `ar_allocated` total slots.
- * ar_items has `ar_free` free slots
+ * ar_items has `ar_allocated_count` total slots.
+ * ar_items has `ar_free_count` free slots
  * 
  */
-typedef struct _list_of_entries
+typedef struct entry_list
 {
         dt_entry**              ar_items;
-        ssize_t                 ar_free;
-        ssize_t                 ar_used;           // used = dummies + nentries
-        ssize_t                 ar_allocated;
+        ssize_t                 ar_free_count;
+        ssize_t                 ar_used_count;           // used = dummies + nentries
+        ssize_t                 ar_allocated_count;
         unsigned short          ar_isfirst;
-} list;
+} entry_list;
 
 
-typedef struct _dict
+typedef struct dict
 {
-        list         dt_entries;        // entries in order
-        ssize_t      dt_free;           // frees
-        ssize_t      dt_nentries;       // active entries
+        entry_list         dt_entries;        // entries in order
+        ssize_t      dt_free_count;           // frees
+        ssize_t      dt_active_entries_count;       // active entries
         void*        dt_indices;        // indices
-        ssize_t      dt_allocated;      // all of it
-        ssize_t      dt_used;           // active + dummies
+        ssize_t      dt_allocated_count;      // all of it
+        ssize_t      dt_used_count;           // active + dummies
 } dict;
 
-list *array_create(ssize_t initial_size);
+entry_list *array_create(size_t initial_size);
 
-ssize_t array_lookup(list *arr, dt_entry *en);
+ssize_t array_lookup(entry_list *arr, dt_entry *en);
 
-int array_append(list *arr, dt_entry *item);
+int array_append(entry_list *arr, dt_entry *item);
 
-void array_insert(list *arr, ssize_t index, dt_entry *item);
+void array_insert(entry_list *arr, ssize_t index, dt_entry *item);
 
-void array_delete(list *arr, ssize_t index);
+void array_delete(entry_list *arr, ssize_t index);
 
-dt_entry array_pop(list *arr);
+dt_entry array_pop(entry_list *arr);
 
-int array_extend(list *arr, dt_entry **ens, ssize_t nd);
+int array_extend(entry_list *arr, dt_entry **ens, ssize_t nd);
 
-dt_entry *array_getitem(list *arr, ssize_t ix);
+dt_entry *array_getitem(entry_list *arr, ssize_t ix);
 
-void array_free(list *arr);
+void array_free(entry_list *arr);
 
-static int array_setitem(list *arr, ssize_t ix, dt_entry *entry);
+static int array_setitem(entry_list *arr, ssize_t ix, dt_entry *entry);
 
-void array_free_items(list *arr);
+void array_free_items(entry_list *arr);
 
-int arr_remove_entry(list *arr, ssize_t ix);
+int arr_remove_entry(entry_list *arr, ssize_t ix);
 
-int array_grow(list *arr, ssize_t n);
+int array_grow(entry_list *arr, ssize_t n);
 
-int array_clear(list *arr);
+int array_clear(entry_list *arr);
 
-ssize_t array_size(list *arr);
+ssize_t array_size(entry_list *arr);
 
 
 // return hash(key)
@@ -171,7 +171,7 @@ hash_t hash(dkey_t key);
  * @return dict* 
  */
 dict*
-dict_new_empty();
+dict_new_empty(void);
 
 dict*
 dict_new_initialized(dkey_t *keys, dval_t *values, size_t n);
@@ -203,25 +203,25 @@ ssize_t dict_lookup(dict *dt, hash_t h, dkey_t key, volatile dval_t *value);
 
 void print_indices(dict *dt);
 
-void dict_printitems(itemobj *it);
+void dict_printitems(itemset *it);
 
-int dict_freeitems(itemobj *it);
+int dict_freeitems(itemset *it);
 
 int dict_free(dict *dt);
 
-keyobj *dict_getkeys(dict *dt);
+keyset *dict_getkeys(dict *dt);
 
-itemobj *dict_getitems(dict *dt);
+itemset *dict_getitems(dict *dt);
 
-int dict_freekeys(keyobj *);
+int dict_freekeys(keyset *);
 
-void dict_printkeys(keyobj *);
+void dict_printkeys(keyset *);
 
-valobj *dict_getvalues(dict *dt);
+valset *dict_getvalues(dict *dt);
 
-int dict_freevalues(valobj *v);
+int dict_freevalues(valset *v);
 
-void dict_printvalues(valobj *v);
+void dict_printvalues(valset *v);
 
 dict *dict_copy(dict *o);
 
@@ -254,7 +254,7 @@ dval_t dict_getvalue_knownhash(dict *dt, hash_t h, dkey_t key);
 
 int dict_getitem(dict *dt, dkey_t key, item *it);
 
-dict* dict_new_presized(ssize_t nentries);
+dict* dict_new_presized(size_t nentries);
 
 void dict_printitem(item it);
 

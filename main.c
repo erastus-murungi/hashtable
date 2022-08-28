@@ -27,7 +27,7 @@ void test_dict_insert (ssize_t maxlen);
 void test_dict_initialized (ssize_t maxlen);
 
 int
-main ()
+main (void)
 {
   test_dict_insert (4000000);
   return EXIT_SUCCESS;
@@ -92,7 +92,7 @@ test_dict_insert (ssize_t maxlen)
           fprintf (stderr, "insertion failed\n");
           goto Fail;
         }
-      if ((mp->dt_nentries - 1) != i && n_owrites < 1)
+      if ((mp->dt_active_entries_count - 1) != i && n_owrites < 1)
         {
           fprintf (stderr, "%d\n", n_owrites);
           goto Fail;
@@ -103,7 +103,7 @@ test_dict_insert (ssize_t maxlen)
           goto Fail;
         }
     }
-  assert (n_owrites + mp->dt_nentries == maxlen);
+  assert (n_owrites + mp->dt_active_entries_count == maxlen);
 
   clock_gettime (CLOCK_MONOTONIC, &end);
 

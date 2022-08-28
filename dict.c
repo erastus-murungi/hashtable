@@ -9,15 +9,17 @@
 #include "hashes.h"
 
 /* The total number of slots in the dictionary */
-#define DT_SIZE(dt) (dt->dt_allocated)
+#define DT_SIZE(dt) (dt->dt_allocated_count)
 
-#define DT_MASK(dt) ((dt)->dt_allocated - 1)
+#define DT_MASK(dt) ((dt)->dt_allocated_count - 1)
 
-/* The total number of used slots in the dictionary */
-#define DT_USED(dt) ((dt)->dt_entries.ar_used)
+/* The total number of used entry slots */
+#define DT_USED(dt) ((dt)->dt_entries.ar_used_count)
 
+/* Append an entry to the entries array*/
 #define DT_ADD_TO_ENTRIES(dt, entry) array_append (&dt->dt_entries, entry)
 
+/* entries_array[ix].value = value */
 #define DT_SET_VALUE(dt, ix, value)                                           \
   (array_getitem (&dt->dt_entries, ix)->et_value = value)
 
@@ -44,14 +46,14 @@
 
 #define ESTIMATE_SIZE(n) (((((n)*3) + 1)) >> 1)
 
-#define GROW(d) ((d)->dt_nentries * 3)
+#define GROW(d) ((d)->dt_active_entries_count * 3)
 
 #define ACTUAL_SIZE(size)                                                     \
   (IS_POWER_OF_2 (size) ? size : (1 << (64 - __builtin_clzl (size))))
 
 #define DT_ENTRIES(dt) (dt->dt_entries.ar_items)
 
-#define NEEDS_RESIZING(dt) (dt->dt_free <= 0)
+#define NEEDS_RESIZING(dt) (dt->dt_free_count <= 0)
 
 #define MIN_NUM_ENT (5)
 
@@ -72,13 +74,14 @@ static double average = 0;
 static inline void
 assert_consistent (dict *dt)
 {
-  ssize_t usable = USABLE_FRACTION (dt->dt_allocated);
+  ssize_t usable = USABLE_FRACTION (dt->dt_allocated_count);
 
-  assert (0 <= dt->dt_used && dt->dt_used <= usable);
-  assert (IS_POWER_OF_2 (dt->dt_allocated));
-  assert (0 <= dt->dt_free && dt->dt_free <= usable);
-  assert (0 <= dt->dt_nentries && dt->dt_nentries <= usable);
-  assert (dt->dt_free + dt->dt_nentries <= usable);
+  assert (0 <= dt->dt_used_count && dt->dt_used_count <= usable);
+  assert (IS_POWER_OF_2 (dt->dt_allocated_count));
+  assert (0 <= dt->dt_free_count && dt->dt_free_count <= usable);
+  assert (0 <= dt->dt_active_entries_count
+          && dt->dt_active_entries_count <= usable);
+  assert (dt->dt_free_count + dt->dt_active_entries_count <= usable);
 }
 
 static dt_entry *
@@ -108,10 +111,10 @@ zip_to_entries (dkey_t *keys, dval_t *values, ssize_t n)
 }
 
 dict *
-dict_new_presized (ssize_t nentries)
+dict_new_presized (size_t nentries)
 {
   dict *d = SAFEMALLOC (sizeof (dict));
-  list *arr = array_create (nentries);
+  entry_list *arr = array_create (nentries);
   if (!arr)
     {
       fprintf (stderr, "array create failed\n");
@@ -120,11 +123,11 @@ dict_new_presized (ssize_t nentries)
   ssize_t estimate = ACTUAL_SIZE (ESTIMATE_SIZE (nentries));
 
   *d = (dict){ .dt_entries = *arr,
-               .dt_free = USABLE_FRACTION (estimate),
-               .dt_nentries = 0,
+               .dt_free_count = USABLE_FRACTION (estimate),
+               .dt_active_entries_count = 0,
                .dt_indices = NULL,
-               .dt_used = 0,
-               .dt_allocated = 0 };
+               .dt_used_count = 0,
+               .dt_allocated_count = 0 };
   free (arr);
   if (dict_new_index (d, estimate) < 0)
     {
@@ -163,18 +166,18 @@ dict_new_initialized (dkey_t *keys, dval_t *values, size_t n)
 }
 
 dict *
-dict_new_empty ()
+dict_new_empty (void)
 {
   dict *d = SAFEMALLOC (sizeof (dict));
 
-  list *arr = array_create (MINSIZE);
+  entry_list *arr = array_create (MINSIZE);
   *d = (dict){
     .dt_entries = *arr,
-    .dt_free = MIN_NUM_ENT,
-    .dt_nentries = 0,
+    .dt_free_count = MIN_NUM_ENT,
+    .dt_active_entries_count = 0,
     .dt_indices = NULL,
-    .dt_used = 0,
-    .dt_allocated = MINSIZE,
+    .dt_used_count = 0,
+    .dt_allocated_count = MINSIZE,
   };
   free (arr);
   dict_new_index (d, MINSIZE);
@@ -211,7 +214,7 @@ dict_new_index (dict *dt, ssize_t minsize)
     }
   ssize_t ts = es * s;
   memset (dt->dt_indices, EMPTY, ts);
-  dt->dt_allocated = s;
+  dt->dt_allocated_count = s;
   if (!dt->dt_indices)
     {
       return -1;
@@ -292,8 +295,8 @@ build_indices (dict *dt)
   dt_entry **entries = dt->dt_entries.ar_items;
   size_t mask = (size_t)DT_SIZE (dt) - 1; // mask
 
-  ssize_t m = dt->dt_entries.ar_used;
-  assert (m == dt->dt_used);
+  ssize_t m = dt->dt_entries.ar_used_count;
+  assert (m == dt->dt_used_count);
   dt_entry *entry = *(entries);
   for (ssize_t ix = 0; ix != m; entry = *(++entries), ++ix)
     {
@@ -426,7 +429,8 @@ dict_resize (dict *dt, ssize_t minsize)
       return -1;
     }
   build_indices (dt);
-  dt->dt_free = USABLE_FRACTION (dt->dt_allocated) - dt->dt_nentries;
+  dt->dt_free_count
+      = USABLE_FRACTION (dt->dt_allocated_count) - dt->dt_active_entries_count;
   return 0;
 }
 
@@ -439,13 +443,13 @@ dict_insert (dict *dt, dkey_t key, dval_t value)
 
 /**
  * @brief Insert a 3-tuple of (key, value, hash(key) into a dictionary)
- * 
- * @param dt the dictionary object 
- * @param hash 
- * @param key 
- * @param value 
+ *
+ * @param dt the dictionary object
+ * @param hash
+ * @param key
+ * @param value
  * @return int (-1) if any input value is invalid
- *             (0)  if an entirely new 
+ *             (0)  if an entirely new
  *             (1)  if key was already in the dictionary
  */
 int
@@ -455,11 +459,12 @@ dict_insert_with_hash (dict *dt, hash_t hash, const dkey_t *key,
   if (!value || !key || !dt)
     return -1;
   dval_t oldvalue;
-  // lookup the key, while simulatneously retrieving the value if the key exists
+  // lookup the key, while simulatneously retrieving the value if the key
+  // exists
   ssize_t ix = dict_lookup (dt, hash, *key, &oldvalue);
 
   if (ix == EMPTY)
-    // key was not found, so we insert it 
+    // key was not found, so we insert it
     {
       if (NEEDS_RESIZING (dt))
         {
@@ -468,16 +473,16 @@ dict_insert_with_hash (dict *dt, hash_t hash, const dkey_t *key,
       // we allocate space for a new entry
       dt_entry *new_entry = SAFEMALLOC (sizeof (dt_entry));
       *new_entry = (dt_entry){ hash, *key, *value };
-      // we add the entry to the list of entrys
+      // we add the entry to the entry_list of entrys
       DT_ADD_TO_ENTRIES (dt, new_entry);
       ssize_t hashpos = find_empty_slot (dt, hash);
       dictkeys_set_index (dt, hashpos, DT_USED (dt) - 1);
-      dt->dt_used++;
-      dt->dt_free--;
-      dt->dt_nentries++;
+      dt->dt_used_count++;
+      dt->dt_free_count--;
+      dt->dt_active_entries_count++;
     }
   else if (oldvalue != NONE && (oldvalue != *value))
-   // key was found so we overwrite the value at `ix`
+    // key was found, so we overwrite the value at `ix`
     {
       DT_SET_VALUE (dt, ix, *value);
       return 1;
@@ -516,7 +521,7 @@ dict_getitem (dict *dt, dkey_t key, item *it)
     }
 }
 
-valobj *
+valset *
 dict_getvalues (dict *dt)
 {
   if (!dt)
@@ -524,22 +529,23 @@ dict_getvalues (dict *dt)
       fprintf (stderr, "Null pointer\n");
       return NULL;
     }
-  if (dt->dt_nentries == 0)
+  if (dt->dt_active_entries_count == 0)
     {
-      valobj *v = SAFEMALLOC (sizeof (valobj));
+      valset *v = SAFEMALLOC (sizeof (valset));
       v->n_vals = 0;
       v->vals = NULL;
       return v;
     }
   else
     {
-      valobj *v = SAFEMALLOC (sizeof (valobj));
-      dval_t *values = SAFEMALLOC (sizeof (dval_t) * dt->dt_nentries);
+      valset *v = SAFEMALLOC (sizeof (valset));
+      dval_t *values
+          = SAFEMALLOC (sizeof (dval_t) * dt->dt_active_entries_count);
       v->vals = values;
-      v->n_vals = dt->dt_nentries;
+      v->n_vals = dt->dt_active_entries_count;
       dt_entry **entries = DT_ENTRIES (dt);
 
-      for (ssize_t i = 0, j = 0, m = dt->dt_used; i < m; i++, entries++)
+      for (ssize_t i = 0, j = 0, m = dt->dt_used_count; i < m; i++, entries++)
         if (entries)
           values[j++] = (*entries)->et_value;
 
@@ -548,7 +554,7 @@ dict_getvalues (dict *dt)
 }
 
 int
-dict_freevalues (valobj *v)
+dict_freevalues (valset *v)
 {
   if (!v)
     return -1;
@@ -567,7 +573,7 @@ dict_freevalues (valobj *v)
 static void repr_val (dval_t x, FILE *stream);
 
 void
-dict_printvalues (valobj *v)
+dict_printvalues (valset *v)
 {
   if (!v)
     {
@@ -595,26 +601,26 @@ dict_printvalues (valobj *v)
     }
 }
 
-keyobj *
+keyset *
 dict_getkeys (dict *dt)
 {
   if (!dt)
     {
       return NULL;
     }
-  keyobj *ko = SAFEMALLOC (sizeof (*ko));
-  if (dt->dt_nentries == 0)
+  keyset *ko = SAFEMALLOC (sizeof (*ko));
+  if (dt->dt_active_entries_count == 0)
     {
       ko->key = NULL;
       ko->n_keys = 0;
     }
   else
     {
-      dkey_t *keys = SAFEMALLOC (sizeof (*keys) * dt->dt_nentries);
+      dkey_t *keys = SAFEMALLOC (sizeof (*keys) * dt->dt_active_entries_count);
       ko->key = keys;
-      ko->n_keys = dt->dt_nentries;
+      ko->n_keys = dt->dt_active_entries_count;
       dt_entry **entries = DT_ENTRIES (dt);
-      for (ssize_t i = 0, j = 0, m = dt->dt_entries.ar_used; i < m; i++)
+      for (ssize_t i = 0, j = 0, m = dt->dt_entries.ar_used_count; i < m; i++)
         if (entries[i])
           keys[j++] = entries[i]->et_key;
     }
@@ -622,7 +628,7 @@ dict_getkeys (dict *dt)
 }
 
 int
-dict_freekeys (keyobj *k)
+dict_freekeys (keyset *k)
 {
   if (!k)
     return -1;
@@ -641,7 +647,7 @@ dict_freekeys (keyobj *k)
 static void repr_key (dkey_t x, FILE *stream);
 
 void
-dict_printkeys (keyobj *keyobj)
+dict_printkeys (keyset *keyobj)
 {
   if (!keyobj)
     {
@@ -669,26 +675,26 @@ dict_printkeys (keyobj *keyobj)
     }
 }
 
-itemobj *
+itemset *
 dict_getitems (dict *dt)
 {
   if (!dt)
     {
       return NULL;
     }
-  if (dt->dt_nentries == 0)
+  if (dt->dt_active_entries_count == 0)
     {
-      itemobj *it = SAFEMALLOC (sizeof (itemobj));
+      itemset *it = SAFEMALLOC (sizeof (itemset));
       it->n_items = 0;
       it->items = NULL;
       return it;
     }
-  itemobj *it = SAFEMALLOC (sizeof (itemobj));
-  item *items = SAFEMALLOC (sizeof (item) * dt->dt_nentries);
+  itemset *it = SAFEMALLOC (sizeof (itemset));
+  item *items = SAFEMALLOC (sizeof (item) * dt->dt_active_entries_count);
   dt_entry **entries = DT_ENTRIES (dt);
 
   item t;
-  for (ssize_t i = 0, j = 0; i < dt->dt_entries.ar_used; i++)
+  for (ssize_t i = 0, j = 0; i < dt->dt_entries.ar_used_count; i++)
     {
       if (entries[i] != NULL)
         {
@@ -698,7 +704,7 @@ dict_getitems (dict *dt)
         }
     }
   it->items = items;
-  it->n_items = dt->dt_entries.ar_used;
+  it->n_items = dt->dt_entries.ar_used_count;
   return it;
 }
 
@@ -743,7 +749,7 @@ dict_repr (dict *dt, FILE *stream)
 {
   if (!dt)
     return -1;
-  if (dt->dt_nentries == 0)
+  if (dt->dt_active_entries_count == 0)
     {
       fprintf (stream, "dict([])");
       return 1;
@@ -751,10 +757,10 @@ dict_repr (dict *dt, FILE *stream)
   else
     {
       fprintf (stream, "dict([");
-      ssize_t m = dt->dt_nentries;
+      ssize_t m = dt->dt_active_entries_count;
       bool first = true;
       dt_entry *entry = dt->dt_entries.ar_items[0];
-      for (ssize_t i = 0; i < dt->dt_entries.ar_used;
+      for (ssize_t i = 0; i < dt->dt_entries.ar_used_count;
            entry = dt->dt_entries.ar_items[++i])
         {
           if (entry)
@@ -794,7 +800,7 @@ dict_delitem (dict *dt, dkey_t key)
     {
       return -1;
     }
-  dt->dt_nentries -= 1;
+  dt->dt_active_entries_count -= 1;
   return 0;
 }
 
@@ -806,14 +812,14 @@ print_indices (dict *dt)
       fprintf (stderr, "ERROR");
       return;
     }
-  ssize_t s = dt->dt_allocated;
+  ssize_t s = dt->dt_allocated_count;
   ssize_t m = s;
   if (s <= 0xff)
     { // 255 | (2^8) - 1
       printf ("[");
       const int8_t *indices = (const int8_t *)dt->dt_indices;
       int8_t t = indices[0];
-      for (ssize_t i = 0; i < dt->dt_allocated; t = indices[++i])
+      for (ssize_t i = 0; i < dt->dt_allocated_count; t = indices[++i])
         {
           switch (t)
             {
@@ -836,7 +842,7 @@ print_indices (dict *dt)
       printf ("[");
       const int16_t *indices = (const int16_t *)dt->dt_indices;
       int16_t t = indices[0];
-      for (ssize_t i = 0; i < dt->dt_allocated; t = indices[++i])
+      for (ssize_t i = 0; i < dt->dt_allocated_count; t = indices[++i])
         {
           switch (t)
             {
@@ -860,7 +866,7 @@ print_indices (dict *dt)
       printf ("[");
       const int64_t *indices = (const int64_t *)dt->dt_indices;
       int64_t t = indices[0];
-      for (ssize_t i = 0; i < dt->dt_allocated; t = indices[++i])
+      for (ssize_t i = 0; i < dt->dt_allocated_count; t = indices[++i])
         {
           switch (t)
             {
@@ -884,7 +890,7 @@ print_indices (dict *dt)
       printf ("[");
       const int32_t *indices = (const int32_t *)dt->dt_indices;
       int32_t t = indices[0];
-      for (ssize_t i = 0; i < dt->dt_allocated; t = indices[++i])
+      for (ssize_t i = 0; i < dt->dt_allocated_count; t = indices[++i])
         {
           switch (t)
             {
@@ -912,7 +918,7 @@ dict_printitem (item it)
 }
 
 void
-dict_printitems (itemobj *it)
+dict_printitems (itemset *it)
 {
   ssize_t n = it->n_items;
   item *item = it->items;
@@ -938,7 +944,7 @@ dict_printitems (itemobj *it)
 }
 
 int
-dict_freeitems (itemobj *it)
+dict_freeitems (itemset *it)
 {
   if (!it)
     {
@@ -964,7 +970,7 @@ dict_free (dict *dt)
       fprintf (stderr, "NULL POINTER\n");
       return -1;
     }
-  assert (IS_POWER_OF_2 ((dt->dt_allocated)));
+  assert (IS_POWER_OF_2 ((dt->dt_allocated_count)));
   array_free_items (&dt->dt_entries);
   free (dt->dt_indices);
   return 1;
@@ -981,9 +987,9 @@ dict_clear (dict *dt)
   dict_new_index (dt, MINSIZE);
   if (!dt->dt_indices)
     return -1;
-  dt->dt_used = 0;
-  dt->dt_nentries = 0;
-  dt->dt_free = MIN_NUM_ENT;
+  dt->dt_used_count = 0;
+  dt->dt_active_entries_count = 0;
+  dt->dt_free_count = MIN_NUM_ENT;
   if (array_clear (&dt->dt_entries) != 0)
     {
       return -1;
@@ -997,7 +1003,7 @@ dict_copy (dict *o)
 {
   if (!o)
     return NULL;
-  if (o->dt_nentries == 0)
+  if (o->dt_active_entries_count == 0)
     return dict_new_empty ();
 
   assert (o);
@@ -1014,16 +1020,16 @@ dict_copy (dict *o)
     return NULL;
   memcpy (new->dt_indices, o->dt_indices, d);
   /* After copying key/value pairs, we need to incref all
-     keysobj and valobj and they are about to be co-owned by a
+     keysobj and valset and they are about to be co-owned by a
      new dict object. */
 
   dt_entry **entries = DT_ENTRIES (o);
-  list *entries_copy = array_create (o->dt_nentries);
+  entry_list *entries_copy = array_create (o->dt_active_entries_count);
   if (!entries_copy)
     return NULL;
   entries_copy->ar_isfirst = ~entries_copy->ar_isfirst;
 
-  ssize_t n = o->dt_used;
+  ssize_t n = o->dt_used_count;
   for (ssize_t i = 0; i < n; i++)
     {
       dt_entry *entry = entries[i];
@@ -1046,7 +1052,7 @@ dict_size (dict *dt)
       fprintf (stderr, "Error\n");
       return -1;
     }
-  return (dt)->dt_nentries;
+  return (dt)->dt_active_entries_count;
 }
 
 static int
@@ -1076,28 +1082,31 @@ dict_update (dict *a, dict *b, int override)
     {
       return -1;
     }
-  if (a == b || b->dt_used == 0)
+  if (a == b || b->dt_used_count == 0)
     {
       /* a.update(a) or a.update({}); nothing to do */
       return 0;
     }
   // resize index
-  if (USABLE_FRACTION (a->dt_allocated) < b->dt_nentries + a->dt_used)
+  if (USABLE_FRACTION (a->dt_allocated_count)
+      < b->dt_active_entries_count + a->dt_used_count)
     {
-      if (dict_resize (a, ESTIMATE_SIZE (a->dt_used + b->dt_used)) != 0)
+      if (dict_resize (a, ESTIMATE_SIZE (a->dt_used_count + b->dt_used_count))
+          != 0)
         {
           return -1;
         }
     }
   // might need to resize the entries array too
-  if (array_grow (&a->dt_entries, a->dt_entries.ar_used + b->dt_nentries)
+  if (array_grow (&a->dt_entries,
+                  a->dt_entries.ar_used_count + b->dt_active_entries_count)
       == -1)
     {
       fprintf (stderr, "Memory full\n");
       return -1;
     }
   ep0 = DT_ENTRIES (b);
-  for (i = 0, n = b->dt_nentries; i < n; i++)
+  for (i = 0, n = b->dt_active_entries_count; i < n; i++)
     {
       dkey_t key;
       dval_t value;
@@ -1127,7 +1136,7 @@ dict_update (dict *a, dict *b, int override)
           if (err != 0)
             return -1;
 
-          if (n != b->dt_nentries)
+          if (n != b->dt_active_entries_count)
             {
               fprintf (stderr, "dict mutated during update");
               return -1;
@@ -1159,9 +1168,9 @@ dict_equal (dict *a, dict *b)
 {
   ssize_t i;
 
-  if (a->dt_nentries != b->dt_nentries)
+  if (a->dt_active_entries_count != b->dt_active_entries_count)
     return 0;
-  for (i = 0; i < a->dt_used; i++)
+  for (i = 0; i < a->dt_used_count; i++)
     {
       dt_entry *ep = DT_ENTRIES (a)[i];
       dval_t a_val = ep->et_value;
@@ -1194,11 +1203,11 @@ dict_sizeof (dict *dt)
       return -1;
     }
 
-  ssize_t t = 0;
+  size_t t = 0;
   /* size of entries */
   t += sizeof (dt->dt_entries);
-  t += (sizeof (dt_entry) * dt->dt_nentries)
-       + (sizeof (dt_entry *) * dt->dt_entries.ar_allocated);
+  t += (sizeof (dt_entry) * dt->dt_active_entries_count)
+       + (sizeof (dt_entry *) * dt->dt_entries.ar_allocated_count);
   t += sizeof (dict);
 
   /* sizeof indices*/
@@ -1215,8 +1224,8 @@ dict_sizeof (dict *dt)
 #endif
   else
     es = 4;
-  t += dt->dt_allocated * es;
-  return t;
+  t += dt->dt_allocated_count * es;
+  return (ssize_t) t;
 }
 
 void
@@ -1233,13 +1242,15 @@ dict_printinfo (dict *dt)
       printf ("  avg no. probes  : \033[0m\033[33m%.2f\033[0m\n", average);
 #endif
       printf ("  allocated       : \033[0m\033[33m%zd\033[0m\n",
-              dt->dt_allocated);
-      printf ("  used            : \033[0m\033[34m%zd\033[0m\n", dt->dt_used);
+              dt->dt_allocated_count);
+      printf ("  used            : \033[0m\033[34m%zd\033[0m\n",
+              dt->dt_used_count);
       printf ("  nentries        : \033[0m\033[34m%zd\033[0m\n",
-              dt->dt_nentries);
-      printf ("  free            : \033[0m\033[32m%zd\033[0m\n", dt->dt_free);
+              dt->dt_active_entries_count);
+      printf ("  free            : \033[0m\033[32m%zd\033[0m\n",
+              dt->dt_free_count);
       printf ("  load factor     : \033[1m\033[35m%.3f\033[0m />\n",
-              ((double)dt->dt_used / (double)dt->dt_allocated));
+              ((double)dt->dt_used_count / (double)dt->dt_allocated_count));
     }
 }
 
@@ -1264,5 +1275,5 @@ dict_is_empty (dict *dt)
     {
       return -1;
     }
-  return dt->dt_nentries == 0;
+  return dt->dt_active_entries_count == 0;
 }
