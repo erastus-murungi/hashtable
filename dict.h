@@ -120,16 +120,32 @@ typedef struct entry_list
         unsigned short          ar_isfirst;
 } entry_list;
 
+/**
+ * @brief Types of entries
+ *      1) Empty slots: populated by NONE
+ *      2) Dummy slots: populated by DUMMY
+ *      3) Active entry slots: populate by an index >= 0
+ *      4) Used slots: active and dummy
+ *      5) Free slots: dummy and empty
+ * 
+ */
 
 typedef struct dict
 {
-        entry_list         dt_entries;        // entries in order
+        entry_list   dt_entries;        // entries in order
+        void*        dt_indices;        // indices
         ssize_t      dt_free_count;           // frees
         ssize_t      dt_active_entries_count;       // active entries
-        void*        dt_indices;        // indices
         ssize_t      dt_allocated_count;      // all of it
         ssize_t      dt_used_count;           // active + dummies
 } dict;
+
+enum {
+  OK,
+  OK_REPLACED,
+  INVALID_INPUT,
+  INTERNAL_ERROR
+} InsertResultStatus;
 
 entry_list *array_create(size_t initial_size);
 

@@ -34,11 +34,13 @@
 
 #define PERTURB_SHIFT ((unsigned)5)
 
-#define EMPTY (-1)
-
-#define DUMMY (-2)
-
-#define ERROR (-3)
+enum
+{
+  EMPTY = (-1),
+  DUMMY = (-2),
+  DICT_IS_NULL = (-3),
+  KEY_IS_NULL = (-4),
+} LookupStatus;
 
 #define NONE (NULL)
 
@@ -57,8 +59,6 @@
 
 #define MIN_NUM_ENT (5)
 
-#define GET_NO_PROBES (1)
-
 static inline void dictkeys_set_index (dict *keys, ssize_t i, ssize_t ix);
 
 static inline ssize_t dictkeys_get_index (const dict *dt, ssize_t i);
@@ -67,9 +67,13 @@ ssize_t dict_new_index (dict *dt, ssize_t minsize);
 
 static void build_indices (dict *dt);
 
+#ifdef PROBE
+
 static int N = 0;
 
 static double average = 0;
+
+#endif
 
 static inline void
 assert_consistent (dict *dt)
@@ -155,7 +159,8 @@ dict_new_initialized (dkey_t *keys, dval_t *values, size_t n)
       for (ssize_t i = 0; i < n; i++)
         {
           dval_t *val = (values == NULL) ? NULL : &values[i];
-          if (dict_insert_with_hash (d, hash (keys[i]), &keys[i], val) == -1)
+          if (dict_insert_with_hash (d, hash (keys[i]), &keys[i], val)
+              > OK_REPLACED)
             {
               return NULL;
             }
@@ -341,19 +346,35 @@ lookdict_index (dict *dt, hash_t hash, ssize_t index)
     }
 }
 
+static inline ssize_t
+get_initial_probe_index (dict *dt, hash_t h)
+{
+  return h & DT_MASK (dt);
+}
+
+/**
+ * @brief Lookup function based on algorithm D of Knuth
+ *
+ * @param dt a dictionary object
+ * @param key_hash the hash of the key
+ * @param key the key
+ * @param value the value
+ * @return ssize_t
+ */
 ssize_t
-dict_lookup (dict *dt, hash_t h, dkey_t key, volatile dval_t *value)
+dict_lookup (dict *dt, hash_t key_hash, dkey_t key, volatile dval_t *value)
 {
   if (!dt)
     {
-      return ERROR;
+      return DICT_IS_NULL;
     }
-  ssize_t i, mask, perturb;
-  mask = DT_MASK (dt);
-  perturb = h;
-  i = h & mask;
-
+  // The initial probe index is computed as hash mod the table size.
+  ssize_t i = get_initial_probe_index (dt, key_hash);
   int x = 0;
+
+  ssize_t mask, perturb;
+  mask = DT_MASK (dt);
+  perturb = key_hash;
 
   for (;;)
     {
@@ -361,7 +382,7 @@ dict_lookup (dict *dt, hash_t h, dkey_t key, volatile dval_t *value)
       ssize_t ix = dictkeys_get_index (dt, i);
       if (ix == EMPTY)
         {
-#ifdef GET_NO_PROBES
+#ifdef PROBES
           average = ((average * (N)) + x) / (N + 1);
           N++;
 #endif
@@ -372,9 +393,9 @@ dict_lookup (dict *dt, hash_t h, dkey_t key, volatile dval_t *value)
         {
           dt_entry *maybe = DT_GET_ENTRY (dt, ix);
           if ((&key == &maybe->et_key)
-              || (h == maybe->et_hashval && maybe->et_key == key))
+              || (key_hash == maybe->et_hashval && maybe->et_key == key))
             {
-#ifdef GET_NO_PROBES
+#ifdef PROBES
               average = ((average * (N)) + x) / (N + 1);
               N++;
 #endif
@@ -399,14 +420,23 @@ dict_getvalue_knownhash (dict *dt, hash_t h, dkey_t key)
     return value;
 }
 
+/**
+ * @brief find slot for an item from its hash
+          when it is known that the key is not present in the dict
+ *
+ * @param dt a dictionary
+ * @param hash hash of the index of an item
+ * @return ssize_t an index
+ */
 static ssize_t
 find_empty_slot (dict *dt, hash_t hash)
 {
   assert (dt != NULL);
 
-  const size_t mask = DT_MASK (dt);
-  size_t i = hash & mask;
+  size_t i = get_initial_probe_index (dt, hash);
   ssize_t ix = dictkeys_get_index (dt, i);
+
+  const size_t mask = DT_MASK (dt);
 
   for (size_t perturb = hash; ix >= 0;)
     {
@@ -438,7 +468,9 @@ int
 dict_insert (dict *dt, dkey_t key, dval_t value)
 {
   hash_t h = hash (key);
-  return dict_insert_with_hash (dt, h, &key, &value);
+  int ret = dict_insert_with_hash (dt, h, &key, &value);
+  assert_consistent (dt);
+  return ret;
 }
 
 /**
@@ -457,7 +489,8 @@ dict_insert_with_hash (dict *dt, hash_t hash, const dkey_t *key,
                        const dval_t *value)
 {
   if (!value || !key || !dt)
-    return -1;
+    return INVALID_INPUT;
+
   dval_t oldvalue;
   // lookup the key, while simulatneously retrieving the value if the key
   // exists
@@ -480,15 +513,15 @@ dict_insert_with_hash (dict *dt, hash_t hash, const dkey_t *key,
       dt->dt_used_count++;
       dt->dt_free_count--;
       dt->dt_active_entries_count++;
+      return OK;
     }
   else if (oldvalue != NONE && (oldvalue != *value))
     // key was found, so we overwrite the value at `ix`
     {
       DT_SET_VALUE (dt, ix, *value);
-      return 1;
+      return OK_REPLACED;
     }
-  assert_consistent (dt);
-  return EXIT_SUCCESS;
+  return INTERNAL_ERROR;
 }
 
 dval_t
@@ -717,7 +750,7 @@ dict_contains (dict *dict, dkey_t key)
   dval_t value;
   hash_t h = hash (key);
   ix = dict_lookup (dict, h, key, &value);
-  if (ix == ERROR)
+  if (ix == DICT_IS_NULL)
     return -1;
   return (ix != EMPTY && value != NONE);
 }
@@ -1181,7 +1214,7 @@ dict_equal (dict *a, dict *b)
           dkey_t key = ep->et_key;
 
           ssize_t er = dict_lookup (b, ep->et_hashval, key, &b_val);
-          if (b_val == NULL || er == ERROR)
+          if (b_val == NULL || er == DICT_IS_NULL)
             {
               return 0;
             }
@@ -1225,7 +1258,7 @@ dict_sizeof (dict *dt)
   else
     es = 4;
   t += dt->dt_allocated_count * es;
-  return (ssize_t) t;
+  return (ssize_t)t;
 }
 
 void
@@ -1238,7 +1271,7 @@ dict_printinfo (dict *dt)
       printf ("\033[1m\033[32m--Dictionary Attributes--:\033[0m\n");
       printf ("< size in bytes   : \033[0m\033[33m%zd bytes\033[0m\n",
               dict_sizeof (dt));
-#ifdef GET_NO_PROBES
+#ifdef PROBES
       printf ("  avg no. probes  : \033[0m\033[33m%.2f\033[0m\n", average);
 #endif
       printf ("  allocated       : \033[0m\033[33m%zd\033[0m\n",

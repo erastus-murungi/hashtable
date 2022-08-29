@@ -4,12 +4,17 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_EXTENSIONS ON)
 set(CMAKE_C_EXTENSIONS ON)
 
-project(hashtable C)
+project(hashtable VERSION 1.0.0)
 
 set(CMAKE_C_STANDARD 99)
 
 add_compile_options(-O3 -ffast-math -march=native -Wall -pedantic -Werror -Wno-unused-function)
 
+option(PROBES "Get the number of probes" OFF)
+
+if (PROBES)
+  add_compile_options(-DPROFILE)
+endif()
 
 include(FetchContent)
 FetchContent_Declare(
